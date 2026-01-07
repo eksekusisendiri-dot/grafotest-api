@@ -18,6 +18,27 @@ const corsHeaders: HeadersInit = {
   'Access-Control-Allow-Headers': 'Content-Type'
 }
 
+/**
+ * 🔒 Robust Gemini JSON extractor
+ * - Aman jika Gemini menambah teks
+ * - Aman jika multiline
+ * - Aman jika JSON dibungkus penjelasan
+ */
+function extractJsonSafely(rawText: string) {
+  // 1️⃣ Coba parse langsung
+  try {
+    return JSON.parse(rawText)
+  } catch {}
+
+  // 2️⃣ Cari blok JSON pertama–terakhir
+  const match = rawText.match(/\{[\s\S]*\}/)
+  if (!match) {
+    throw new Error('No JSON found in Gemini output')
+  }
+
+  return JSON.parse(match[0])
+}
+
 export default {
   async fetch(
     req: Request,
@@ -43,7 +64,7 @@ export default {
     }
 
     // =========================
-    // ANALYZE (GEMINI FULL)
+    // ANALYZE (GEMINI)
     // =========================
     if (req.method === 'POST' && url.pathname === '/analyze') {
       try {
@@ -58,10 +79,7 @@ export default {
         }
 
         if (!env.GEMINI_API_KEY) {
-          return new Response(
-            JSON.stringify({ error: 'Gemini API key not set' }),
-            { status: 500, headers: corsHeaders }
-          )
+          throw new Error('GEMINI_API_KEY not set')
         }
 
         const langInstruction =
@@ -75,9 +93,9 @@ ${langInstruction}
 Anda adalah analis grafologi profesional.
 
 TUGAS:
-Analisis tulisan tangan dari gambar berdasarkan prinsip grafologi.
+Analisis tulisan tangan berdasarkan prinsip grafologi.
 
-WAJIB keluarkan JSON VALID dengan struktur berikut:
+WAJIB keluarkan JSON VALID dengan struktur:
 {
   "personalitySummary": string,
   "traits": [
@@ -97,7 +115,6 @@ ATURAN:
 - JANGAN menulis teks di luar JSON
 - Semua array minimal 3 item
 - confidence antara 0.4 – 0.9
-- Bersifat probabilistik
 `
 
         const geminiRes = await fetch(
@@ -127,9 +144,9 @@ ATURAN:
         )
 
         if (!geminiRes.ok) {
-          const errText = await geminiRes.text()
-          console.error('GEMINI HTTP ERROR:', geminiRes.status, errText)
-          throw new Error('Gemini API error')
+          const err = await geminiRes.text()
+          console.error('GEMINI HTTP ERROR:', geminiRes.status, err)
+          throw new Error('Gemini HTTP error')
         }
 
         const data: any = await geminiRes.json()
@@ -137,22 +154,14 @@ ATURAN:
         const rawText =
           data?.candidates?.[0]?.content?.parts
             ?.map((p: any) => p.text)
-            .join('\n') ?? ''
+            ?.join('\n') ?? ''
 
         if (!rawText) {
           console.error('EMPTY GEMINI RESPONSE:', data)
           throw new Error('Empty Gemini response')
         }
 
-        const start = rawText.indexOf('{')
-        const end = rawText.lastIndexOf('}')
-
-        if (start === -1 || end === -1) {
-          console.error('NO JSON FOUND:', rawText)
-          throw new Error('Invalid JSON output')
-        }
-
-        const parsed = JSON.parse(rawText.slice(start, end + 1))
+        const parsed = extractJsonSafely(rawText)
 
         return new Response(JSON.stringify(parsed), {
           headers: corsHeaders
@@ -186,6 +195,10 @@ ATURAN:
           )
         }
 
+        if (!env.GEMINI_API_KEY) {
+          throw new Error('GEMINI_API_KEY not set')
+        }
+
         const langInstruction =
           language === 'en'
             ? 'Use English.'
@@ -194,19 +207,13 @@ ATURAN:
         const prompt = `
 ${langInstruction}
 
-Anda adalah analis grafologi profesional.
-
 KONTEKS:
 "${context}"
 
 TUGAS:
-1. Nilai kecocokan karakter dengan konteks
-2. Berikan skor 0–100
-3. Jelaskan relevansi
-4. Berikan saran
-5. Sebutkan potensi risiko
+Nilai kecocokan karakter tulisan tangan dengan konteks.
 
-FORMAT JSON VALID:
+FORMAT JSON:
 {
   "suitabilityScore": number,
   "relevanceExplanation": string,
@@ -246,13 +253,13 @@ ATURAN:
         )
 
         if (!geminiRes.ok) {
-          const errText = await geminiRes.text()
+          const err = await geminiRes.text()
           console.error(
             'GEMINI CONTEXTUAL ERROR:',
             geminiRes.status,
-            errText
+            err
           )
-          throw new Error('Gemini API error')
+          throw new Error('Gemini HTTP error')
         }
 
         const data: any = await geminiRes.json()
@@ -260,22 +267,13 @@ ATURAN:
         const rawText =
           data?.candidates?.[0]?.content?.parts
             ?.map((p: any) => p.text)
-            .join('\n') ?? ''
+            ?.join('\n') ?? ''
 
         if (!rawText) {
-          console.error('EMPTY CONTEXTUAL RESPONSE:', data)
           throw new Error('Empty Gemini response')
         }
 
-        const start = rawText.indexOf('{')
-        const end = rawText.lastIndexOf('}')
-
-        if (start === -1 || end === -1) {
-          console.error('INVALID JSON CONTEXTUAL:', rawText)
-          throw new Error('Invalid JSON output')
-        }
-
-        const parsed = JSON.parse(rawText.slice(start, end + 1))
+        const parsed = extractJsonSafely(rawText)
 
         return new Response(JSON.stringify(parsed), {
           headers: corsHeaders
